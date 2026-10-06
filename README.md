@@ -59,24 +59,24 @@
 
 ### `search_listings`
 
-- **What it does:**
-- **Inputs:** <!-- name and type each: `max_price` (float), not "a price" -->
-- **Returns:**
-- **When it has nothing:**
+- **What it does:** Searches the listings database for items matching a description with optional size and price filters; scores results by keyword overlap and returns the best matches
+- **Inputs:** <!-- name and type each: `max_price` (float), not "a price" --> description (str) — keywords describing the item; size (str | None) — size token to filter by (e.g. "M"), or None to skip size filtering; max_price (float | None) — inclusive price ceiling in dollars, or None to skip price filtering
+- **Returns:**A list of listing dicts, each containing id (str), title (str), description (str), category (str), style_tags (list[str]), size (str), condition (str), price (float), colors (list[str]), brand (str | None), platform (str); sorted by keyword-overlap score, best match first, at most config.SEARCH_RESULT_LIMIT items
+- **When it has nothing:**Returns an empty list [] — never None, never raises. The loop branches on this
 
 ### `suggest_outfit`
 
-- **What it does:**
-- **Inputs:**
-- **Returns:**
-- **When it has nothing:**
+- **What it does:**Given the item the user is considering and their saved wardrobe, asks the model to suggest one or two specific outfits
+- **Inputs:**new_item (dict) — a listing dict from search_listings; wardrobe (dict) — a wardrobe dict with an "items" key holding a list of wardrobe item dicts (may be empty)
+- **Returns:**A non-empty string of outfit suggestions, two to four sentences, naming specific pieces from the wardrobe when available
+- **When it has nothing:**When wardrobe["items"] is empty, returns general styling advice for the item type rather than raising or returning an empty string.
 
 ### `create_fit_card`
 
-- **What it does:**
-- **Inputs:**
-- **Returns:**
-- **When it has nothing:**
+- **What it does:**Writes a short social-media caption for the thrift find, mentioning the item, price, and platform, styled to read like a real post
+- **Inputs:**outfit (str) — the outfit suggestion from suggest_outfit; new_item (dict) — the listing dict for the item being captioned
+- **Returns:**A two-to-four sentence caption string that mentions the item's title, its price as a number, and the platform name exactly once
+- **When it has nothing:**if outfit is empty or whitespace, returns the string "No outfit suggestion available — cannot generate a fit card."
 
 ---
 
@@ -113,7 +113,30 @@
 **One full query**
 
 ```
-$ python app.py ask '...'
+$ python app.py ask 'vintage graphic tee under $30'
+1] parse_query
+      in:  dict with keys: query
+      out: dict with keys: description, size, max_price
+[2] search_listings (via MCP)
+      in:  dict with keys: description, size, max_price
+      out: 10 items: Y2K Baby Tee — Butterfly Print, Graphic Tee — 2003 Tour Bootleg Style, Vintage Band Tee — Faded Grey … +7 more
+[3] select_item
+      in:  dict with keys: from
+      out: Y2K Baby Tee — Butterfly Print ($18.0, depop)
+[4] suggest_outfit
+      in:  dict with keys: item, wardrobe_items
+      out: Pair the Y2K baby tee with the **baggy dark wash straight-leg jeans** and **chunky white sneakers** foran eff…
+[5] create_fit_card
+      in:  dict with keys: item
+      out: Obsessed with the dreamy butterfly print on this little Y2K baby tee. It’s the ultimate early-2000s staple, pe…
+
+  Found:    Y2K Baby Tee — Butterfly Print — $18.0 on depop
+
+  Outfit:   Pair the Y2K baby tee with the **baggy dark wash straight-leg jeans** and **chunky white sneakers** for an effortless, authentic early-2000s silhouette. Throw the **black cropped zip hoodie** over top for an easy layering piece that balances the fitted, cropped cut of the tee with a relaxed street-style edge.
+
+  Fit card: Obsessed with the dreamy butterfly print on this little Y2K baby tee. It’s the ultimate early-2000s staple, perfect for pairing with baggy denim and chunky sneakers. Grab it on my depop right now for just $18 before it's gone!
+
+0 model calls this session, 2 served from cache
 
 ```
 
@@ -121,16 +144,25 @@ $ python app.py ask '...'
 
 ```
 $ python -c "from tools import search_listings; print(search_listings('graphic tee', max_price=30))"
+[{'id': 'lst_002', 'title': 'Y2K Baby Tee — Butterfly Print', 'description': 'Super cute early 2000s baby tee withbutterfly graphic. Fitted crop length. Tag says medium but fits like a small.', 'category': 'tops', 'style_tags': ['y2k', 'vintage', 'graphic tee', 'cottagecore'], 'size': 'S/M', 'condition': 'excellent', 'price': 18.0, 'colors':['white', 'pink', 'purple'], 'brand': None, 'platform': 'depop'}, {'id': 'lst_006', 'title': 'Graphic Tee — 2003 Tour Bootleg Style', 'description': 'Vintage-style bootleg tee with faded graphic. Slightly boxy fit. 100% cotton, soft and worn-in.', 'category': 'tops', 'style_tags': ['graphic tee', 'vintage', 'grunge', 'streetwear', 'band tee'], 'size': 'L', 'condition': 'good', 'price': 24.0, 'colors': ['black'], 'brand': None, 'platform': 'depop'}, {'id':'lst_017', 'title': 'Mesh Long-Sleeve Top — Black', 'description': 'Sheer black mesh long-sleeve. Great for layering under a graphic tee or over a bralette. Stretchy material, fits true to size.', 'category': 'tops', 'style_tags': ['y2k', 'grunge', 'goth', 'layering'], 'size': 'S/M', 'condition': 'excellent', 'price': 15.0, 'colors': ['black'], 'brand': None, 'platform': 'depop'}, {'id': 'lst_033', 'title': 'Vintage Band Tee — Faded Grey', 'description': 'Faded grey band-style tee with distressed graphic. Crew neck. Fits boxy. Well-loved but no holes or major damage.', 'category': 'tops', 'style_tags': ['vintage', 'grunge', 'band tee', 'graphic tee', 'streetwear'], 'size': 'L', 'condition': 'fair', 'price': 19.0, 'colors': ['grey', 'charcoal'], 'brand': None, 'platform': 'depop'}, {'id': 'lst_011', 'title': 'Low-Rise Cargo Pants — Khaki', 'description': 'Y2K era low-rise cargo pants. Lots of pockets. Khakicolor, slightly distressed at the hems. Great for layering with a long tee.', 'category': 'bottoms', 'style_tags':['y2k', 'cargo', '2000s', 'streetwear'], 'size': 'W29', 'condition': 'fair', 'price': 27.0, 'colors': ['khaki', 'tan'], 'brand': None, 'platform': 'poshmark'}, {'id': 'lst_012', 'title': 'Oversized Crewneck Sweatshirt — Vintage Navy', 'description': 'Perfectly faded navy crewneck. Genuinely vintage — not manufactured distressed. Ribbed cuffs and hem. No graphics, clean.', 'category': 'tops', 'style_tags': ['vintage', 'basics', 'oversized', 'classic'], 'size': 'XL (fits oversized)', 'condition': 'good', 'price': 20.0, 'colors': ['navy'], 'brand': None, 'platform': 'thredUp'}, {'id': 'lst_015', 'title': 'Vintage Graphic Hoodie — Faded Black', 'description': 'Faded black pullover hoodie with barely-visible vintage graphic on the chest. Cozy interior. Some pilling but adds to the worn-in look.', 'category': 'tops', 'style_tags': ['vintage', 'grunge', 'graphic', 'streetwear'], 'size': 'L', 'condition': 'fair', 'price': 26.0, 'colors': ['black', 'charcoal'], 'brand': None, 'platform': 'depop'}]
+```
+
+```
+
+$ python -c "from tools import suggest_outfit; from utils.data_loader import get_example_wardrobe, load_listings; print(suggest_outfit(load_listings()[0], get_example_wardrobe()))"
+
+
+**Outfit:** Vintage Levi's 501 Jeans + White ribbed tank top + Black combat boots + Black cropped zip hoodie
+
+**Why it works:** This combination balances the classic, structured fit of the mid-wash denim with edgy, modern streetwear staples. The white tank provides a clean, minimalist base that lets the vintage fade of the jeans stand out, while the cropped hoodie and combat boots anchor the look with attitude and proportion.
+
 
 ```
 
 ```
-$ python -c "from tools import suggest_outfit; ..."
+$ python -c "from tools import create_fit_card; from utils.data_loader import load_listings; print(create_fit_card('jeans and white sneakers', load_listings()[0]))"
 
-```
-
-```
-$ python -c "from tools import create_fit_card; ..."
+Nothing beats the fit of broken-in vintage denim. These classic medium wash Levi's 501s bring that effortless streetwear energy and are ready to be your neweveryday go-to. Style them with crisp white sneakers for an instant off-duty look, available now on my Depop for just $38.
 
 ```
 
@@ -147,15 +179,15 @@ $ python -c "from tools import create_fit_card; ..."
 
 **Moment 1**
 
-- *What I asked for:*
-- *What came back:*
-- *What I changed:*
+- *What I asked for:* Help me fix the issue with MCP server
+- *What came back:* AI identify that function need to be registered
+- *What I changed:* I tested and it worked as expected
 
 **Moment 2**
 
-- *What I asked for:*
-- *What came back:*
-- *What I changed:*
+- *What I asked for:* critique this criteria
+- *What came back:* critique
+- *What I changed:* Adjusted criteria to be life ready
 
 <!-- ═══════════════════════ UNIT 4 — THE TEST ═══════════════════════
 

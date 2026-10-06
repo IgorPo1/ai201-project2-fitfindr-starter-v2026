@@ -54,10 +54,10 @@ Given a query that matches no listings, the agent stops before calling
      compares session["selected_item"] against what actually reached
      suggest_outfit is the shape you're after. -->
 
-
+For 5 of 5 successful runs (runs where search_listings returns at least one result), session["selected_item"] is a dict with a non-empty "title" field, and the outfit suggestion string returned by suggest_outfit contains at least one word from that item's title.
 
 **Why this target:**
-
+State failure is invisible in the final output — if the wrong item reaches suggest_outfit, the fit card is generated for the wrong thing and nothing crashes. The only way to catch it is to compare what the search found against what the outfit tool actually received. if the item changed mid-session the name would no longer appear. 5 of 5, so state passing is either working or broken.
 
 
 ---
@@ -74,10 +74,13 @@ Given a query that matches no listings, the agent stops before calling
      mentions the price? Two different items producing the same opening
      sentence? A card longer than a caption anyone would post? Any of those can
      be turned into a number. -->
+For 5 of 5 successful runs, session["fit_card"] is a string that contains the item's price (as a number or "affordable") and the platform name (one of "depop", "thredUp", or "poshmark").
+
 
 
 
 **Why this target:**
+The fit card prompt explicitly asks the model to mention price and platform once each. These two facts are what make the caption actionable. 5 of 5 because the prompt is explicit.
 
 
 
@@ -91,10 +94,13 @@ Given a query that matches no listings, the agent stops before calling
      wardrobe path, what happens when the model can't be reached, whether the
      search respects a price ceiling — anything, as long as it names a number
      or an observable outcome. -->
+When the agent is run with an empty wardrobe (wardrobe["items"] is []), session["outfit_suggestion"] is a non-empty (at least 20 characters) in 5 of 5 tries, and session["fit_card"] is also non-empty.
+
 
 
 
 **Why this target:**
+A new user with no saved wardrobe is a realistic case, not an edge case — someone just starting to thrift has nothing saved yet. If the agent crashes or returns an empty string in this case, it is useless for its primary audience. I chose "at least 20 characters" as the observable because an empty string or a single-word fallback would technically be non-empty but would not be useful advice. 5 of 5 because the empty-wardrobe branch in suggest_outfit is a deliberate fallback — if it fails, the code is wrong, not the data.
 
 
 

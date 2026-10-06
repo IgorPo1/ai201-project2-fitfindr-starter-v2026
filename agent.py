@@ -12,7 +12,7 @@ Build and test your three tools in `tools.py` first. Then come here.
 
     python agent.py          runs both example paths below
 """
-
+import re
 import config
 import trace
 from tools import search_listings, suggest_outfit, create_fit_card
@@ -44,6 +44,52 @@ def new_session(query: str, wardrobe: dict) -> dict:
         "outfit_suggestion": None,   # what suggest_outfit returned
         "fit_card": None,            # what create_fit_card returned
         "error": None,               # set when the run ended early
+    }
+# ── query parsing ─────────────────────────────────────────────────────────────
+
+def _parse_query(query: str) -> dict:
+    """
+    Parse a plain-language query into description, size, and max_price.
+
+    Uses regex to extract size tokens (S, M, L, XL, XS, etc.) and price
+    ceilings ($N or "under N"). Everything remaining is the description.
+
+    Returns a dict with keys: description (str), size (str|None),
+    max_price (float|None).
+    """
+    text = query.strip()
+    size = None
+    max_price = None
+
+    # --- extract size FIRST so numeric sizes (e.g. "size 8") are not
+    #     consumed by the price regex: "size N", or standalone S/M/L/XL/XS/XXS/XXL ---
+    size_match = re.search(
+        r"\bsize\s+([A-Za-z0-9]{1,3})\b|(?<![A-Za-z0-9])(XXS|XS|XL|XXL|[SML])(?![A-Za-z0-9])",
+        text, re.I
+    )
+    if size_match:
+        size = (size_match.group(1) or size_match.group(2)).upper()
+        text = text[:size_match.start()] + text[size_match.end():]
+
+    # --- extract max_price: requires "under N", "$N", or "under $N" ---
+    # A bare number like "90s" should NOT match here.
+    price_match = re.search(r"(?:under\s+\$?|(?<!\w)\$)(\d+(?:\.\d+)?)", text, re.I)
+    if price_match:
+        max_price = float(price_match.group(1))
+        text = text[:price_match.start()] + text[price_match.end():]
+
+    # --- clean up leftover punctuation / filler words ---
+    description = re.sub(r"[,\-]+", " ", text).strip()
+    description = re.sub(r"\s+", " ", description)
+    # Remove common stopwords that add no search value
+    description = re.sub(r"\b(a|an|the|for|and|in|on|at|of|under|over|with|size)\b",
+                         " ", description, flags=re.I).strip()
+    description = re.sub(r"\s+", " ", description)
+
+    return {
+        "description": description,
+        "size": size,
+        "max_price": max_price,
     }
 
 
@@ -107,8 +153,110 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     """
     session = new_session(query, wardrobe)
 
-    # TODO: delete these two lines and build the loop.
-    session["error"] = "The planning loop isn't built yet — see the TODO in agent.py."
+    from mcp_client import call_tool
+
+    session = new_session(query, wardrobe)
+    iteration = 0
+
+    try:
+        # ── step 1: parse the query ───────────────────────────────────────────
+        iteration += 1
+        trace.check_iterations(iteration)
+        parsed = _parse_query(query)
+        session["parsed"] = parsed
+        trace.step(
+            "parse_query",
+            inputs={"query": query},
+            returned=parsed,
+        )
+
+        # ── step 2: search listings via MCP ──────────────────────────────────
+        iteration += 1
+        trace.check_iterations(iteration)
+        results = call_tool("search_listings", {
+            "description": parsed["description"],
+            "size": parsed["size"],
+            "max_price": parsed["max_price"],
+        })
+        session["search_results"] = results
+        trace.step(
+            "search_listings (via MCP)",
+            inputs={
+                "description": parsed["description"],
+                "size": parsed["size"],
+                "max_price": parsed["max_price"],
+            },
+            returned=results,
+        )
+
+        # ── BRANCH: if nothing came back, stop here ───────────────────────────
+        if not results:
+            desc = parsed["description"] or query
+            hints = []
+            if parsed["max_price"] is not None:
+                hints.append(f"raise the price ceiling above ${parsed['max_price']:.0f}")
+            if parsed["size"] is not None:
+                hints.append(f"try a different size (searched for '{parsed['size']}')")
+            if not hints:
+                hints.append("try different keywords")
+            session["error"] = (
+                f"No listings matched '{desc}'. To find something, you could: "
+                + "; or ".join(hints) + "."
+            )
+            trace.step(
+                "branch: empty results",
+                note=f"stopping early — {session['error']}",
+            )
+            return session
+
+        # ── step 3: pick the top result ───────────────────────────────────────
+        iteration += 1
+        trace.check_iterations(iteration)
+        session["selected_item"] = results[0]
+        trace.step(
+            "select_item",
+            inputs={"from": f"{len(results)} results"},
+            returned=session["selected_item"],
+        )
+
+        # ── step 4: suggest an outfit ─────────────────────────────────────────
+        iteration += 1
+        trace.check_iterations(iteration)
+        outfit = suggest_outfit(
+            new_item=session["selected_item"],
+            wardrobe=session["wardrobe"],
+        )
+        session["outfit_suggestion"] = outfit
+        trace.step(
+            "suggest_outfit",
+            inputs={
+                "item": session["selected_item"].get("title"),
+                "wardrobe_items": len(wardrobe.get("items", [])),
+            },
+            returned=outfit,
+        )
+
+        # ── step 5: create the fit card ───────────────────────────────────────
+        iteration += 1
+        trace.check_iterations(iteration)
+        fit_card = create_fit_card(
+            outfit=session["outfit_suggestion"],
+            new_item=session["selected_item"],
+        )
+        session["fit_card"] = fit_card
+        trace.step(
+            "create_fit_card",
+            inputs={"item": session["selected_item"].get("title")},
+            returned=fit_card,
+        )
+
+    except ModelUnavailable as exc:
+        session["error"] = (
+            f"The model couldn't be reached: {exc}. "
+            "Check your GEMINI_API_KEY in .env and try again."
+        )
+        trace.step("error", note=str(session["error"]))
+
     return session
 
 
