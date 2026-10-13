@@ -16,7 +16,8 @@ import re
 import config
 import trace
 from tools import search_listings, suggest_outfit, create_fit_card
-from generate import ModelUnavailable
+from generate import ModelUnavailable, QuotaGuard
+from mcp_client import MCPError
 
 
 # ── session state ─────────────────────────────────────────────────────────────
@@ -226,6 +227,17 @@ def run_agent(query: str, wardrobe: dict) -> dict:
             wardrobe=session["wardrobe"],
         )
         session["outfit_suggestion"] = outfit
+        # Silent failure guard: the model can return an empty string without
+        # raising. Without this, create_fit_card gets nothing and the run
+        # reports success with a "no outfit" caption.
+        if not outfit or not outfit.strip():
+            session["error"] = (
+                "The model returned no outfit suggestion, so there's nothing to "
+                "write a fit card about. Run the query again. If it keeps "
+                "happening, run it with AI201_CACHE=0 to skip the saved answers."
+            )
+            trace.step("branch: empty outfit", note=session["error"])
+            return session
         trace.step(
             "suggest_outfit",
             inputs={
@@ -249,10 +261,25 @@ def run_agent(query: str, wardrobe: dict) -> dict:
             returned=fit_card,
         )
 
+    except MCPError as exc:
+        session["error"] = (
+            "The search server couldn't be reached, so no listings were searched. "
+            "Run `python mcp_server.py` on its own to see the error, fix it, then "
+            f"try again. Details: {exc}"
+        )
+        trace.step("error", note=str(session["error"]))
+
     except ModelUnavailable as exc:
         session["error"] = (
             f"The model couldn't be reached: {exc}. "
             "Check your GEMINI_API_KEY in .env and try again."
+        )
+        trace.step("error", note=str(session["error"]))
+
+    except QuotaGuard as exc:
+        session["error"] = (
+            f"Stopped before making more model calls. {exc} "
+            "Wait, or raise SESSION_REQUEST_BUDGET in config.py if the run is legitimate."
         )
         trace.step("error", note=str(session["error"]))
 
