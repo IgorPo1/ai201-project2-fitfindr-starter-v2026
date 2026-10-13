@@ -102,7 +102,12 @@ def search_listings(
     if not description or not description.strip():
         return listings[: config.SEARCH_RESULT_LIMIT]
 
-    keywords = re.sub(r"[^\w\s]", " ", description.lower()).split()
+    # Keep only keywords with a letter in them, so numbers like "0" and "60"
+    # from "0-60" can't match prices or "90s" and pass as relevant.
+    keywords = [
+        kw for kw in re.sub(r"[^\w\s]", " ", description.lower()).split()
+        if re.search(r"[a-z]", kw)
+    ]
 
     def _score(listing: dict) -> int:
         # Build a searchable blob from every text field
@@ -113,7 +118,10 @@ def search_listings(
             " ".join(listing.get("style_tags", [])),
             listing.get("brand", "") or "",
         ]).lower()
-        return sum(1 for kw in keywords if kw in blob)
+        # Match whole words, not substrings, so "tee" doesn't match inside
+        # other words and a short keyword can't hit by accident.
+        words = set(re.findall(r"[a-z0-9]+", blob))
+        return sum(1 for kw in keywords if kw in words)
 
     scored = [(l, _score(l)) for l in listings]
     scored = [(l, s) for l, s in scored if s > 0]
