@@ -27,15 +27,21 @@ web server has to be. The reason is worth reading before you deploy: see the
 note above `_one_at_a_time` below — it also decides which gunicorn worker you
 can use.
 
-⚠️ There is deliberately NO logging, NO timing and NO request counting in this
-file. That is unit 9's follow-along: you instrument this yourself, first, and
-then deploy it. A structured log you were handed teaches you nothing about
-what belongs in one — and the timing field is the one everybody skips.
+Unit 9 extensions (Shape B — Harden against failure):
+  - Structured JSON logging: every request writes a record to fitfindr_run.log.
+  - Request timeout: agent calls that exceed REQUEST_TIMEOUT_S return a 503
+    rather than leaving the caller waiting indefinitely.
+  - Input validation: empty, non-string, or oversized queries get a 400 with a
+    specific message rather than propagating garbage to run_agent.
 """
 
+import json
 import os
 import sys
 import threading
+import time
+from datetime import datetime, timezone
+from pathlib import Path
 
 # config first, and before anything that talks to the model: it loads your .env
 # and fixes the Windows console encoding for every module that imports it.
@@ -47,6 +53,64 @@ from agent import run_agent
 from utils.data_loader import get_example_wardrobe
 
 app = Flask(__name__)
+
+# ── constants ─────────────────────────────────────────────────────────────────
+
+# Wall-clock limit for one agent run via HTTP.  Covers the case where the model
+# is unreachable or hanging — without this, POST /ask would hang indefinitely
+# and the caller would have no way to tell the difference between "slow" and
+# "broken".  30 seconds is generous: a normal run is 4-8 s; a 503-and-retry
+# run adds at most ~65 s of backoff per retry.  If the agent hasn't answered in
+# 30 s the most likely explanation is a network problem, not a slow model.
+REQUEST_TIMEOUT_S = 30
+
+# Hard cap on the query length passed to run_agent.  Keeps the prompt size
+# predictable and prevents someone from crafting a query that inflates token
+# counts on purpose.
+MAX_QUERY_LENGTH = 500
+
+# Log file path — in the project root alongside serve.py.
+LOG_FILE = Path(__file__).parent / "fitfindr_run.log"
+
+_log_lock = threading.Lock()
+
+
+# ── structured logging ────────────────────────────────────────────────────────
+
+def _log_request(
+    query: str,
+    duration_s: float,
+    outcome: str,
+    error_message: str | None = None,
+) -> None:
+    """
+    Append one JSON log record to fitfindr_run.log.
+
+    Fields:
+        timestamp    ISO-8601 UTC string — when the request arrived.
+        query        The raw query string received (may be empty on bad input).
+        duration_s   Seconds from request receipt to response, 2 d.p.
+        outcome      "ok" | "error" | "timeout" | "invalid_input"
+        error_message  The error string when outcome != "ok", else null.
+
+    Every request is logged, including failures and bad input — that is the
+    point: a failure that leaves no record is one you will never diagnose.
+    """
+    record = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "query": query,
+        "duration_s": round(duration_s, 3),
+        "outcome": outcome,
+        "error_message": error_message,
+    }
+    line = json.dumps(record, ensure_ascii=False)
+    with _log_lock:
+        try:
+            with open(LOG_FILE, "a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+        except OSError as exc:
+            # Logging must never kill a successful request.
+            print(f"  [log] could not write to {LOG_FILE}: {exc}", file=sys.stderr)
 
 
 # ── one request at a time ─────────────────────────────────────────────────────
@@ -75,18 +139,6 @@ app = Flask(__name__)
 # question — and it keeps the deployed behaviour identical to the CLI's. When
 # that stops being an acceptable trade, the fix is a real queue, not a bigger
 # lock.
-#
-# The same constraint decides your start command, and this is the part that
-# bites in deployment rather than on your machine. `mcp_client.call_tool`
-# wraps `asyncio.run()`, and `asyncio.run()` refuses to start when an event
-# loop is already running. An async worker always has one running. So under
-# `gunicorn -k gevent` (or `-k eventlet`, or `serve:app` wrapped for an ASGI
-# server like uvicorn) EVERY MCP call fails with "asyncio.run() cannot be
-# called from a running event loop" — not some of them under load, all of
-# them, every time, in a place your laptop never showed you.
-#
-#     gunicorn serve:app              ← right: the DEFAULT sync worker
-#     gunicorn -k gevent serve:app    ← breaks every MCP call you make
 
 _one_at_a_time = threading.Lock()
 
@@ -106,28 +158,43 @@ def ask():
                                                 out and you get the same
                                                 example wardrobe the CLI uses.
     Out:  the session dict from run_agent(), as JSON.
+
+    Unit 9 Shape B additions:
+      - Validates query before touching run_agent (empty / non-string / too long → 400).
+      - Times the agent call and enforces REQUEST_TIMEOUT_S.
+      - Logs every request to fitfindr_run.log via _log_request.
     """
+    t_start = time.monotonic()
     payload = request.get_json(silent=True) or {}
-    query = (payload.get("query") or "").strip()
+
+    # ── input validation (Shape B: bad input path) ────────────────────────────
+    raw_query = payload.get("query", "")
+    if not isinstance(raw_query, str):
+        duration = time.monotonic() - t_start
+        _log_request(str(raw_query)[:100], duration, "invalid_input", "query must be a string")
+        return jsonify({"error": "query must be a string"}), 400
+
+    query = raw_query.strip()
     if not query:
-        # 400 rather than a stack trace: the caller can act on this one.
-        return jsonify({"error": "Send JSON with a 'query' field, e.g. "
-                                 '{"query": "vintage graphic tee under $30"}'}), 400
+        duration = time.monotonic() - t_start
+        _log_request("", duration, "invalid_input", "query is empty")
+        return (
+            jsonify({"error": "Send JSON with a 'query' field, e.g. "
+                               '{"query": "vintage graphic tee under $30"}'}),
+            400,
+        )
+
+    if len(query) > MAX_QUERY_LENGTH:
+        duration = time.monotonic() - t_start
+        msg = f"query exceeds {MAX_QUERY_LENGTH} characters (got {len(query)})"
+        _log_request(query[:100], duration, "invalid_input", msg)
+        return jsonify({"error": msg}), 400
 
     wardrobe = payload.get("wardrobe")
     if not isinstance(wardrobe, dict):
         wardrobe = get_example_wardrobe()
 
-    # A queued request should look like a queued request. Without this the
-    # second caller just sits there, and "slow" and "waiting its turn" are
-    # indistinguishable from the outside — which is how people conclude the
-    # deployment is broken when it is behaving exactly as designed.
-    #
-    # This is NOT the logging you add in the follow-along. It prints nothing
-    # on the normal path, carries no timing and counts nothing; it says only
-    # that this request had to wait. `locked()` can be a moment out of date,
-    # so the note is occasionally missed — which costs nothing, because
-    # nothing depends on it.
+    # A queued request should look like a queued request.
     if _one_at_a_time.locked():
         print(
             "  [serve] another request is still running. This one is waiting "
@@ -136,19 +203,50 @@ def ask():
             flush=True,
         )
 
+    # ── agent run with timeout (Shape B: timeout path) ────────────────────────
     failure = None
+    timed_out = False
     session = None
-    with _one_at_a_time:
-        try:
-            session = run_agent(query, wardrobe)
-        except Exception as exc:  # noqa: BLE001 — a 500 with a sentence beats a hang
-            failure = f"{type(exc).__name__}: {exc}"
 
-    # Outside the lock: building a response is not work the next caller should
-    # be waiting on.
+    result_holder: list = []
+    error_holder: list = []
+
+    def _run():
+        try:
+            result_holder.append(run_agent(query, wardrobe))
+        except Exception as exc:  # noqa: BLE001
+            error_holder.append(exc)
+
+    with _one_at_a_time:
+        worker = threading.Thread(target=_run, daemon=True)
+        worker.start()
+        worker.join(timeout=REQUEST_TIMEOUT_S)
+
+        if worker.is_alive():
+            # The agent did not finish within the timeout window.
+            timed_out = True
+        elif error_holder:
+            failure = f"{type(error_holder[0]).__name__}: {error_holder[0]}"
+        else:
+            session = result_holder[0] if result_holder else None
+
+    duration = time.monotonic() - t_start
+
+    if timed_out:
+        _log_request(query, duration, "timeout",
+                     f"agent did not respond within {REQUEST_TIMEOUT_S}s")
+        return jsonify({"error": f"Request timed out after {REQUEST_TIMEOUT_S}s"}), 503
+
     if failure is not None:
+        _log_request(query, duration, "error", failure)
         return jsonify({"error": failure}), 500
 
+    # Even a completed session may carry a session-level error (empty search,
+    # model unavailable caught inside run_agent) — that is still outcome "ok"
+    # from the HTTP layer's perspective: the agent completed and returned a
+    # structured response.
+    err_msg = session.get("error") if session else None
+    _log_request(query, duration, "ok", err_msg)
     return jsonify(session)
 
 
@@ -165,6 +263,7 @@ if __name__ == "__main__":
     debug = os.getenv("AI201_DEBUG", "0") == "1"
 
     print(f"\nFitFindr is listening on http://localhost:{port}")
+    print(f"Logs: {LOG_FILE}")
     print("It runs one request at a time — a second one waits for the first.")
     print("Ask it something (single quotes, as always):\n")
     print(

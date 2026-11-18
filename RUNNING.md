@@ -119,39 +119,94 @@ Useful flags on `ask`:
 
 ---
 
-## Running it somewhere else — **unit 9**
+## Running it — **unit 9 (Path B — local with logs)**
 
-Everything above exits when the command finishes. A host has nothing to keep
-running, so before you can deploy this you need something that stays up.
-`serve.py` is that: the same `run_agent()`, behind two HTTP routes.
+**Path B.** The system runs on your machine, started by a single command,
+with a committed log of it actually running. No hosting account required.
 
-On your machine:
+**What the environment needs:**
+
+| Requirement | Version / detail |
+|---|---|
+| Python | 3.11, 3.12, or 3.13 (not 3.14) |
+| Virtual environment | `.venv` in the project root |
+| Dependencies | `pip install -r requirements.txt` |
+| API key | `GEMINI_API_KEY` in `.env` (copy `.env.example`) |
+| No model files | FitFindr calls the Gemini API — nothing to download |
+
+**The exact start command (Windows PowerShell):**
+
+```powershell
+.venv\Scripts\Activate.ps1
+python serve.py
+```
+
+**macOS / Linux:**
 
 ```bash
+source .venv/bin/activate
 python serve.py
+```
+
+The server prints its address and log file path, then waits:
+
+```
+FitFindr is listening on http://localhost:5000
+Logs: ...\fitfindr_run.log
+It runs one request at a time -- a second one waits for the first.
+```
+
+**Send a request (PowerShell):**
+
+```powershell
+Invoke-WebRequest -Method POST http://localhost:5000/ask `
+  -Headers @{"Content-Type"="application/json"} `
+  -Body '{"query": "vintage graphic tee under $30"}'
+```
+
+**Send a request (bash/macOS):**
+
+```bash
 curl -X POST http://localhost:5000/ask \
   -H 'Content-Type: application/json' \
   -d '{"query": "vintage graphic tee under $30"}'
 ```
 
-On a host, the start command is:
+**Check it is awake:**
 
 ```bash
-gunicorn serve:app
+curl http://localhost:5000/health
+```
+
+Every request appends one JSON record to `fitfindr_run.log` in the project
+root. That file is the committed run record.
+
+**Failure paths you can trigger deliberately:**
+
+```bash
+# Empty query -> 400
+curl -X POST http://localhost:5000/ask \
+  -H 'Content-Type: application/json' \
+  -d '{"query": ""}'
+
+# Non-string query -> 400
+curl -X POST http://localhost:5000/ask \
+  -H 'Content-Type: application/json' \
+  -d '{"query": 12345}'
+
+# Query that matches nothing (stops early, no model call)
+curl -X POST http://localhost:5000/ask \
+  -H 'Content-Type: application/json' \
+  -d '{"query": "designer ballgown size XXS under $5"}'
 ```
 
 | Thing | What it means |
 |---|---|
-| `PORT` | The host tells your app which port to listen on by setting this. Both `serve.py` and `gunicorn` read it, and `serve.py` falls back to `5000` on your machine. Don't hard-code a port |
+| `PORT` | Falls back to `5000` on your machine. Set `PORT=8080` before starting to change it |
 | `POST /ask` | `{"query": "...", "wardrobe": {...}}` — wardrobe optional. Returns the session dict, `error` and all |
 | `GET /health` | Says `ok` if the app is awake |
-| It answers one request at a time | On purpose. A second request waits for the first to finish, and prints `[serve] another request is still running` while it waits. An MCP tool call starts a whole second Python process, and the free tier's 512 MB has no room for two of those at once — and `generate.py`'s rate-limit counting assumes one caller. The reasoning is written out in `serve.py` |
-| `gunicorn serve:app`, exactly | Not `-k gevent`, not `-k eventlet`, not wrapped for uvicorn. `mcp_client.call_tool` uses `asyncio.run()`, which won't start inside a running event loop, so an async worker breaks **every** MCP call — and only once you've deployed it |
-| The first request is slow | The free tier puts your app to sleep after about fifteen minutes of nothing. The next request wakes it up and waits for it — around a minute. Not a bug, and worth knowing before you demo it |
-
-`serve.py` ships with **no logging and no timing in it**, on purpose. You add
-that yourself in the follow-along, before you deploy — instrumenting first is
-the point of the session.
+| It answers one request at a time | On purpose. A second request waits for the first to finish |
+| `fitfindr_run.log` | Appended to on every request. JSON, one record per line |
 
 ---
 
