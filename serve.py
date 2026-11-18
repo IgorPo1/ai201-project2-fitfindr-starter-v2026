@@ -251,7 +251,7 @@ def ask():
 
 
 if __name__ == "__main__":
-    # PORT and 0.0.0.0 are not decoration. A host tells you which port to
+    # PORT  and 0.0.0.0 are not decoration. A host tells you which port to
     # listen on through PORT, and it reaches your process from outside the
     # container — bind 127.0.0.1 and nothing but the container itself can
     # connect, which looks exactly like a broken app from the browser.
