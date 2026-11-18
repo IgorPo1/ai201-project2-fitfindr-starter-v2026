@@ -151,7 +151,7 @@ python serve.py
 The server prints its address and log file path, then waits:
 
 ```
-FitFindr is listening on http://localhost:5000
+FitFindr is listening on http://localhost:5001
 Logs: ...\fitfindr_run.log
 It runs one request at a time -- a second one waits for the first.
 ```
@@ -159,7 +159,7 @@ It runs one request at a time -- a second one waits for the first.
 **Send a request (PowerShell):**
 
 ```powershell
-Invoke-WebRequest -Method POST http://localhost:5000/ask `
+Invoke-WebRequest -Method POST http://localhost:5001/ask `
   -Headers @{"Content-Type"="application/json"} `
   -Body '{"query": "vintage graphic tee under $30"}'
 ```
@@ -167,7 +167,7 @@ Invoke-WebRequest -Method POST http://localhost:5000/ask `
 **Send a request (bash/macOS):**
 
 ```bash
-curl -X POST http://localhost:5000/ask \
+curl -X POST http://localhost:5001/ask \
   -H 'Content-Type: application/json' \
   -d '{"query": "vintage graphic tee under $30"}'
 ```
@@ -175,7 +175,7 @@ curl -X POST http://localhost:5000/ask \
 **Check it is awake:**
 
 ```bash
-curl http://localhost:5000/health
+curl http://localhost:5001/health
 ```
 
 Every request appends one JSON record to `fitfindr_run.log` in the project
@@ -185,24 +185,24 @@ root. That file is the committed run record.
 
 ```bash
 # Empty query -> 400
-curl -X POST http://localhost:5000/ask \
+curl -X POST http://localhost:5001/ask \
   -H 'Content-Type: application/json' \
   -d '{"query": ""}'
 
 # Non-string query -> 400
-curl -X POST http://localhost:5000/ask \
+curl -X POST http://localhost:5001/ask \
   -H 'Content-Type: application/json' \
   -d '{"query": 12345}'
 
 # Query that matches nothing (stops early, no model call)
-curl -X POST http://localhost:5000/ask \
+curl -X POST http://localhost:5001/ask \
   -H 'Content-Type: application/json' \
   -d '{"query": "designer ballgown size XXS under $5"}'
 ```
 
 | Thing | What it means |
 |---|---|
-| `PORT` | Falls back to `5000` on your machine. Set `PORT=8080` before starting to change it |
+| `PORT` | Falls back to `5001` on your machine. Set `PORT=8080` before starting to change it |
 | `POST /ask` | `{"query": "...", "wardrobe": {...}}` — wardrobe optional. Returns the session dict, `error` and all |
 | `GET /health` | Says `ok` if the app is awake |
 | It answers one request at a time | On purpose. A second request waits for the first to finish |

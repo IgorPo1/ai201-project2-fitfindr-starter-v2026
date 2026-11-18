@@ -514,7 +514,7 @@ python serve.py
 ```
 
 
-The server listens on `http://localhost:5000`. Every request appends a JSON
+The server listens on `http://localhost:5001`. Every request appends a JSON
 record to `fitfindr_run.log` in the project root.
 
 ---

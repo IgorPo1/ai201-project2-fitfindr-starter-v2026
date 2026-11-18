@@ -8,7 +8,7 @@ Usage:
     # In one terminal:   python serve.py
     # In another:        python run_capstone_tests.py
 
-Requires the server to be running on localhost:5000.
+Requires the server to be running on localhost:5001.
 Criteria 6, 7, 8, 9 are HTTP tests (send requests, check status + log).
 Criterion 10 is a unit test of generate.py's retry logic.
 """
@@ -53,7 +53,7 @@ except ImportError:
                 return _Resp(e.code, e.read().decode())
 
 
-BASE_URL = "http://localhost:5000"
+BASE_URL = "http://localhost:5001"
 LOG_FILE = Path(__file__).parent / "fitfindr_run.log"
 
 PASS = "PASS"
