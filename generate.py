@@ -328,7 +328,13 @@ def generate(
                 or "resource" in message and "exhaust" in message
                 or "rate" in message and "limit" in message
             )
-            if not rate_limited:
+            # 503 Service Unavailable is a transient overload — treat it like a
+            # rate limit hit and back off rather than immediately failing.
+            # This was the "What's Still Broken" diagnosis from Unit 4.
+            transient_server_error = "503" in message or (
+                "service" in message and "unavailable" in message
+            )
+            if not rate_limited and not transient_server_error:
                 raise ModelUnavailable(_explain(exc)) from exc
             backoff = _retry_delay(exc, attempt)
             print(
