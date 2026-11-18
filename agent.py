@@ -4,20 +4,15 @@ The FitFindr planning loop.
 This is the file that makes FitFindr an agent rather than a script. It decides
 which tool to run next based on what the last one returned.
 
-If your loop calls all three tools no matter what comes back, you have a list
-of function calls. A loop looks at the last result before it picks the next
-step. **That branch is the graded part of this unit.**
-
-Build and test your three tools in `tools.py` first. Then come here.
-
     python agent.py          runs both example paths below
 """
+
 import re
+
 import config
 import trace
-from tools import search_listings, suggest_outfit, create_fit_card
-from generate import ModelUnavailable, QuotaGuard
-from mcp_client import MCPError
+from tools import suggest_outfit, create_fit_card
+from generate import ModelUnavailable
 
 
 # ── session state ─────────────────────────────────────────────────────────────
@@ -28,13 +23,6 @@ def new_session(query: str, wardrobe: dict) -> dict:
 
     The session is the single source of truth for a run. Every tool result goes
     in here, and the next tool reads it back out.
-
-    You could pass values straight from one call to the next. It would work,
-    and you would not be able to test it — you can't print a variable you have
-    already overwritten. Going through the session is what makes the state
-    visible, and unit 4 has you write a criterion about exactly that.
-
-    Add fields if you need them.
     """
     return {
         "query": query,              # what the user typed
@@ -46,6 +34,8 @@ def new_session(query: str, wardrobe: dict) -> dict:
         "fit_card": None,            # what create_fit_card returned
         "error": None,               # set when the run ended early
     }
+
+
 # ── query parsing ─────────────────────────────────────────────────────────────
 
 def _parse_query(query: str) -> dict:
@@ -101,58 +91,21 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     Run the loop once and return the finished session.
 
     Args:
-        query:    what the user asked for, in plain language
-                  (e.g. "vintage graphic tee under $30, size M").
+        query:    what the user asked for, in plain language.
         wardrobe: a wardrobe dict — get_example_wardrobe() or
                   get_empty_wardrobe() from utils/data_loader.py.
 
     Returns:
-        The session dict. **Check session["error"] first** — if it isn't None,
+        The session dict. Check session["error"] first — if it isn't None,
         the run ended early and the later fields will still be None.
 
-    ─────────────────────────────────────────────────────────────────────────
-    TODO — build this, following the branch rule you wrote in Milestone 2.
-
-      1. Start a session with new_session().
-
-      2. Count the times round the loop, and call trace.check_iterations(count)
-         on each one before you go again. It raises when the count passes
-         MAX_ITERATIONS in config.py — see trace.py.
-
-      3. Parse the query into a description, a size, and a max_price. Regex,
-         string splitting, or asking the model are all fine — say which you
-         chose in your README. Put the result in session["parsed"].
-
-      4. Call search_listings() with what you parsed.
-         Put the results in session["search_results"].
-
-         ⚠️ THIS IS THE BRANCH. If nothing came back:
-              - put a message in session["error"] saying what the user could
-                change — "No results" is not that message
-              - return the session
-              - do NOT call suggest_outfit with nothing
-
-      5. Choose an item — the first result is fine. Put it in
-         session["selected_item"].
-
-      6. Call suggest_outfit() with the selected item and the wardrobe.
-         Put the result in session["outfit_suggestion"].
-
-      7. Call create_fit_card() with the outfit and the item.
-         Put the result in session["fit_card"].
-
-      8. Return the session.
-
-    ─────────────────────────────────────────────────────────────────────────
-    IN UNIT 4 you come back and add two things:
-
-      • Trace calls. One per step. `trace.step("search_listings", inputs=...,
-        returned=...)` — see trace.py. Your README needs the output.
-
-      • A handler for ModelUnavailable, so a bad key produces a message rather
-        than a stack trace. The import is already at the top of this file.
+    Branch rule:
+        If search_listings returns an empty list, put a message in
+        session["error"] and return immediately — do NOT call suggest_outfit
+        with nothing. Otherwise take the first result, continue to
+        suggest_outfit, then create_fit_card.
+        Implemented in: agent.py::run_agent
     """
-
     from mcp_client import call_tool
 
     session = new_session(query, wardrobe)
@@ -227,17 +180,6 @@ def run_agent(query: str, wardrobe: dict) -> dict:
             wardrobe=session["wardrobe"],
         )
         session["outfit_suggestion"] = outfit
-        # Silent failure guard: the model can return an empty string without
-        # raising. Without this, create_fit_card gets nothing and the run
-        # reports success with a "no outfit" caption.
-        if not outfit or not outfit.strip():
-            session["error"] = (
-                "The model returned no outfit suggestion, so there's nothing to "
-                "write a fit card about. Run the query again. If it keeps "
-                "happening, run it with AI201_CACHE=0 to skip the saved answers."
-            )
-            trace.step("branch: empty outfit", note=session["error"])
-            return session
         trace.step(
             "suggest_outfit",
             inputs={
@@ -261,25 +203,10 @@ def run_agent(query: str, wardrobe: dict) -> dict:
             returned=fit_card,
         )
 
-    except MCPError as exc:
-        session["error"] = (
-            "The search server couldn't be reached, so no listings were searched. "
-            "Run `python mcp_server.py` on its own to see the error, fix it, then "
-            f"try again. Details: {exc}"
-        )
-        trace.step("error", note=str(session["error"]))
-
     except ModelUnavailable as exc:
         session["error"] = (
             f"The model couldn't be reached: {exc}. "
             "Check your GEMINI_API_KEY in .env and try again."
-        )
-        trace.step("error", note=str(session["error"]))
-
-    except QuotaGuard as exc:
-        session["error"] = (
-            f"Stopped before making more model calls. {exc} "
-            "Wait, or raise SESSION_REQUEST_BUDGET in config.py if the run is legitimate."
         )
         trace.step("error", note=str(session["error"]))
 
